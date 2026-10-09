@@ -1,0 +1,137 @@
+<!doctype html>
+<html lang="it">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
+  <meta name="theme-color" content="#6e55e8">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="CD Wall">
+  <meta name="description" content="Cataloga e ritrova la tua collezione di CD dalle fotografie dei ripiani.">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" sizes="180x180" href="icon-180.png">
+  <link rel="stylesheet" href="styles.css">
+  <title>CD Wall Mobile</title>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand-mark">♫</div>
+    <div><strong>CD Wall</strong><small>La tua libreria musicale</small></div>
+    <button id="installBtn" class="icon-btn hidden" aria-label="Installa app">⇩</button>
+  </header>
+
+  <main>
+    <section class="view active" data-view="home">
+      <div class="hero">
+        <span class="eyebrow">COLLEZIONE</span>
+        <h1>I tuoi CD,<br><em>sempre a portata.</em></h1>
+        <p>Fotografa un ripiano, cataloga i titoli e ritrovali con un tocco.</p>
+        <button class="primary wide" data-go="scan">Scansiona un ripiano</button>
+      </div>
+      <div class="stats">
+        <article><b id="statAlbums">0</b><span>album</span></article>
+        <article><b id="statPhotos">0</b><span>foto</span></article>
+        <article><b id="statLoans">0</b><span>prestiti</span></article>
+      </div>
+      <div class="section-head"><h2>Inseriti di recente</h2><button class="text-btn" data-go="library">Vedi tutti</button></div>
+      <div id="recentList" class="album-list empty-state">Nessun CD catalogato</div>
+    </section>
+
+    <section class="view" data-view="scan">
+      <div class="page-title"><span class="eyebrow">NUOVO CD</span><h1>Scansiona e cataloga</h1><p>Fotografa un ripiano o scegli una foto esistente.</p></div>
+      <label class="capture-card">
+        <input id="photoInput" type="file" accept="image/*" capture="environment">
+        <span class="capture-icon">▣</span><b>Apri fotocamera</b><small>oppure scegli dalla libreria Foto</small>
+      </label>
+      <div id="scanWorkspace" class="hidden">
+        <div id="scanStage" class="photo-stage selectable">
+          <img id="scanImage" alt="Foto del ripiano">
+          <div id="selectionBox" class="selection-box hidden"></div>
+        </div>
+        <div class="toolbar-scroll">
+          <button id="ocrBtn" class="chip">Leggi testo</button>
+          <button id="barcodeBtn" class="chip">Leggi barcode</button>
+          <button id="markBtn" class="chip">Segna dorso</button>
+        </div>
+        <div id="scanProgress" class="progress hidden"><i></i><span>Analisi in corso…</span></div>
+      </div>
+      <form id="albumForm" class="form-card">
+        <input id="editingId" type="hidden">
+        <label>Artista<input id="artistInput" autocomplete="off" required placeholder="Es. Pink Floyd"></label>
+        <label>Titolo album<input id="titleInput" autocomplete="off" required placeholder="Es. The Dark Side of the Moon"></label>
+        <div class="form-row"><label>Anno<input id="yearInput" inputmode="numeric" placeholder="1973"></label><label>Genere<input id="genreInput" placeholder="Rock"></label></div>
+        <label>Posizione fisica<input id="positionInput" placeholder="Scaffale 2, ripiano 4"></label>
+        <label>Codice a barre<input id="barcodeInput" inputmode="numeric" placeholder="EAN / UPC"></label>
+        <label>Testo riconosciuto<textarea id="ocrText" rows="3" placeholder="Il testo letto dalla foto apparirà qui"></textarea></label>
+        <div class="form-actions"><button id="musicSearchBtn" type="button" class="secondary">Cerca dati online</button><button type="submit" class="primary">Salva CD</button></div>
+        <div id="candidateList" class="candidate-list"></div>
+      </form>
+    </section>
+
+    <section class="view" data-view="library">
+      <div class="page-title"><span class="eyebrow">CATALOGO</span><h1>La mia collezione</h1></div>
+      <div class="search-box"><span>⌕</span><input id="librarySearch" type="search" placeholder="Cerca artista, titolo o posizione"></div>
+      <div class="inline-actions"><button id="manualAddBtn" class="secondary">Inserimento manuale</button><button id="duplicatesBtn" class="secondary">Trova duplicati</button></div>
+      <div id="libraryList" class="album-list empty-state">Nessun CD catalogato</div>
+    </section>
+
+    <section class="view" data-view="locate">
+      <div class="page-title"><span class="eyebrow">MAPPA</span><h1>Trova nella libreria</h1><p>Cerca un titolo oppure esplora una foto toccando i dorsi.</p></div>
+      <div class="search-box"><span>⌕</span><input id="locationSearch" type="search" placeholder="Titolo o artista"><button id="locationSearchBtn">Trova</button></div>
+      <label class="select-label">Foto archiviata<select id="photoSelect"><option value="">Scegli una foto…</option></select></label>
+      <div id="locationStage" class="photo-stage location-stage">
+        <img id="locationImage" alt="Mappa del ripiano">
+        <div id="hotspotLayer"></div>
+        <div id="locationEmpty" class="stage-empty">La posizione fotografica apparirà qui</div>
+      </div>
+      <div id="locationInfo" class="location-info">Tocca un dorso evidenziato per vedere artista, titolo e posizione.</div>
+    </section>
+
+    <section class="view" data-view="more">
+      <div class="page-title"><span class="eyebrow">STRUMENTI</span><h1>Prestiti e backup</h1></div>
+      <details open class="panel"><summary>Prestiti <span id="loanBadge">0</span></summary>
+        <form id="loanForm" class="compact-form">
+          <label>Album<select id="loanAlbum"></select></label>
+          <label>Prestato a<input id="borrowerInput" required placeholder="Nome"></label>
+          <label>Restituzione prevista<input id="dueInput" type="date"></label>
+          <button class="primary" type="submit">Registra prestito</button>
+        </form>
+        <div id="loanList" class="loan-list empty-state">Nessun prestito attivo</div>
+      </details>
+      <details class="panel"><summary>Backup e trasferimento</summary>
+        <p class="muted">Il backup completo include catalogo, posizioni e fotografie. Dal menu Condividi puoi salvarlo in iCloud Drive.</p>
+        <div class="stack-actions">
+          <button id="backupBtn" class="primary">Crea backup completo</button>
+          <label class="secondary file-button">Importa backup<input id="restoreInput" type="file" accept="application/json,.cdwall"></label>
+          <button id="windowsExportBtn" class="secondary">Esporta catalogo JSON</button>
+          <button id="csvBtn" class="secondary">Esporta CSV</button>
+          <button id="pdfBtn" class="secondary">Stampa / salva PDF</button>
+        </div>
+      </details>
+      <details class="panel"><summary>Privacy e memoria</summary>
+        <p>Foto, catalogo e OCR restano sul dispositivo. MusicBrainz riceve soltanto artista, titolo o barcode quando scegli “Cerca dati online”.</p>
+        <div id="storageInfo" class="storage-info">Calcolo memoria…</div>
+      </details>
+      <details class="panel"><summary>Installazione su iPhone</summary>
+        <ol><li>Apri questa pagina in Safari.</li><li>Tocca Condividi.</li><li>Scegli “Aggiungi alla schermata Home”.</li><li>Attiva “Apri come app” e tocca Aggiungi.</li></ol>
+      </details>
+    </section>
+  </main>
+
+  <nav class="bottom-nav" aria-label="Navigazione principale">
+    <button class="active" data-go="home"><span>⌂</span>Home</button>
+    <button data-go="scan"><span>⊕</span>Scansiona</button>
+    <button data-go="library"><span>▤</span>Libreria</button>
+    <button data-go="locate"><span>⌖</span>Trova</button>
+    <button data-go="more"><span>•••</span>Altro</button>
+  </nav>
+
+  <div id="toast" class="toast" role="status"></div>
+  <div id="modal" class="modal hidden" role="dialog" aria-modal="true"><div class="modal-card"><button id="modalClose" class="modal-close">×</button><div id="modalBody"></div></div></div>
+
+  <script defer src="https://cdn.jsdelivr.net/npm/tesseract.js@6/dist/tesseract.min.js"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/@zxing/library@0.21.3/umd/index.min.js"></script>
+  <script type="module" src="app.js"></script>
+</body>
+</html>
