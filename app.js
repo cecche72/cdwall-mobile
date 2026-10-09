@@ -358,7 +358,7 @@ async function exportBackup() {
   toast('Preparazione del backup…');
   const photos = [];
   for (const photo of state.photos) photos.push({ id: photo.id, name: photo.name, createdAt: photo.createdAt, data: await blobToDataUrl(photo.blob) });
-  const payload = { format: 'CDWall-Mobile', version: 1, createdAt: new Date().toISOString(), albums: state.albums, photos };
+  const payload = { format: 'CDWall', version: 2, createdAt: new Date().toISOString(), albums: state.albums, photos };
   const file = new File([JSON.stringify(payload)], `CDWall-backup-${dateStamp()}.cdwall`, { type: 'application/json' });
   await shareOrDownload(file, 'Backup CD Wall');
 }
@@ -378,7 +378,9 @@ async function importBackup(event) {
 }
 
 function normalizeImportedAlbum(raw) {
-  return { Id: raw.Id || raw.id || crypto.randomUUID(), Artist: raw.Artist || raw.artist || '', Title: raw.Title || raw.title || '', Year: raw.Year || '', Genre: raw.Genre || '', Position: raw.Position || '', Notes: raw.Notes || '', Barcode: raw.Barcode || '', PhotoId: raw.PhotoId || '', SourceImage: raw.SourceImage || '', ImageX: Number(raw.ImageX)||0, ImageY: Number(raw.ImageY)||0, ImageWidth: Number(raw.ImageWidth)||0, ImageHeight: Number(raw.ImageHeight)||0, LoanedTo: raw.LoanedTo || '', LoanedAt: raw.LoanedAt || null, DueAt: raw.DueAt || null, AddedAt: raw.AddedAt || new Date().toISOString() };
+  const sourceImage = raw.SourceImage || raw.sourceImage || '';
+  const photoId = raw.PhotoId || raw.photoId || (sourceImage.startsWith('idb:') ? sourceImage.slice(4) : '');
+  return { Id: raw.Id || raw.id || crypto.randomUUID(), Artist: raw.Artist || raw.artist || '', Title: raw.Title || raw.title || '', Year: raw.Year || raw.year || '', Genre: raw.Genre || raw.genre || '', Position: raw.Position || raw.position || '', Notes: raw.Notes || raw.notes || '', Barcode: raw.Barcode || raw.barcode || '', PhotoId: photoId, SourceImage: photoId ? `idb:${photoId}` : '', ImageX: Number(raw.ImageX ?? raw.imageX)||0, ImageY: Number(raw.ImageY ?? raw.imageY)||0, ImageWidth: Number(raw.ImageWidth ?? raw.imageWidth)||0, ImageHeight: Number(raw.ImageHeight ?? raw.imageHeight)||0, LoanedTo: raw.LoanedTo || raw.loanedTo || '', LoanedAt: raw.LoanedAt || raw.loanedAt || null, DueAt: raw.DueAt || raw.dueAt || null, AddedAt: raw.AddedAt || raw.addedAt || new Date().toISOString() };
 }
 
 async function exportWindowsCatalog() {
