@@ -47,9 +47,11 @@
       <div id="scanWorkspace" class="hidden">
         <div id="scanStage" class="photo-stage selectable">
           <img id="scanImage" alt="Foto del ripiano">
+          <div id="spineLayer" class="spine-layer"></div>
           <div id="selectionBox" class="selection-box hidden"></div>
         </div>
         <div class="toolbar-scroll">
+          <button id="smartBtn" class="chip smart-chip">Riconosci CD</button>
           <button id="ocrBtn" class="chip">Leggi testo</button>
           <button id="barcodeBtn" class="chip">Leggi barcode</button>
           <button id="markBtn" class="chip">Segna dorso</button>
@@ -110,7 +112,7 @@
         </div>
       </details>
       <details class="panel"><summary>Privacy e memoria</summary>
-        <p>Foto, catalogo e OCR restano sul dispositivo. MusicBrainz riceve soltanto artista, titolo o barcode quando scegli “Cerca dati online”.</p>
+        <p>Foto, catalogo, separazione dei dorsi e OCR restano sul dispositivo. MusicBrainz riceve soltanto il testo, l’artista, il titolo o il barcode necessari alla ricerca. Nessuna fotografia viene inviata.</p>
         <div id="storageInfo" class="storage-info">Calcolo memoria…</div>
       </details>
       <details class="panel"><summary>Installazione su iPhone</summary>

@@ -13,12 +13,19 @@ INSTALLAZIONE SU IPHONE
 FUNZIONI
 - foto dalla fotocamera o dalla libreria Foto;
 - OCR italiano/inglese eseguito nel browser tramite Tesseract.js;
+- riconoscimento musicale assistito: rileva i dorsi, legge il singolo CD e
+  confronta i risultati con MusicBrainz;
 - barcode EAN/UPC tramite API del browser o ZXing;
 - catalogo e fotografie in IndexedDB locale;
 - mappa touch: ricerca titolo, evidenziazione del dorso e popup al tocco;
 - duplicati, posizione, modifica, prestiti, CSV e stampa/PDF;
-- backup completo condivisibile con iCloud Drive;
-- importazione del catalogo JSON prodotto dalla versione Windows.
+- backup completo .cdwall condivisibile con iCloud Drive;
+- backup compatibile in entrambe le direzioni con la versione Windows.
+
+RICONOSCIMENTO CD INTELLIGENTE
+Dopo aver scelto la foto, tocca "Riconosci CD". L'app evidenzia i possibili
+dorsi: toccane uno per leggerlo nelle due direzioni e confrontarlo con
+MusicBrainz. Verifica sempre il risultato proposto prima di salvare.
 
 PRIVACY
 Le fotografie non vengono inviate al server dell'app. OCR e barcode lavorano sul

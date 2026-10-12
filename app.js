@@ -1,7 +1,7 @@
 import { db } from './db.js';
 
 const $ = id => document.getElementById(id);
-const state = { albums: [], photos: [], currentPhoto: null, selection: null, marking: false, dragStart: null, highlightedId: null, deferredInstall: null };
+const state = { albums: [], photos: [], currentPhoto: null, selection: null, detectedSpines: [], marking: false, dragStart: null, highlightedId: null, deferredInstall: null };
 const views = [...document.querySelectorAll('.view')];
 
 document.addEventListener('DOMContentLoaded', init);
@@ -46,6 +46,7 @@ function bindScanning() {
     if (file) await loadScanPhoto(file);
   });
   $('ocrBtn').addEventListener('click', runOcr);
+  $('smartBtn').addEventListener('click', runSmartRecognition);
   $('barcodeBtn').addEventListener('click', runBarcode);
   $('markBtn').addEventListener('click', () => {
     if (!state.currentPhoto) return toast('Prima scegli una fotografia');
@@ -68,9 +69,11 @@ async function loadScanPhoto(blob, existingPhotoId = null) {
   const url = URL.createObjectURL(blob);
   state.currentPhoto = { blob, url, id: existingPhotoId };
   state.selection = null;
+  state.detectedSpines = [];
   $('scanImage').src = url;
   $('scanWorkspace').classList.remove('hidden');
   $('selectionBox').classList.add('hidden');
+  $('spineLayer').innerHTML = '';
 }
 
 function pointPercent(event) {
@@ -113,6 +116,123 @@ function drawSelection(rect) {
   box.classList.remove('hidden');
   Object.assign(box.style, { left: `${rect.x * 100}%`, top: `${rect.y * 100}%`, width: `${rect.w * 100}%`, height: `${rect.h * 100}%` });
 }
+
+async function runSmartRecognition() {
+  if (!state.currentPhoto) return toast('Prima scegli una fotografia');
+  if (!window.Tesseract) return toast('Motore OCR non disponibile: controlla Internet');
+  if (!state.selection) {
+    setProgress(true, 'Individuazione dei dorsi sul dispositivo…');
+    try {
+      state.detectedSpines = await detectSpines(state.currentPhoto.blob);
+      renderDetectedSpines();
+      toast(`Trovati ${state.detectedSpines.length} possibili dorsi: tocca quello da riconoscere`);
+    } catch (error) { toast(`Rilevamento non riuscito: ${error.message}`); }
+    finally { setProgress(false); }
+    return;
+  }
+  await recognizeSelectedSpine();
+}
+
+async function detectSpines(blob) {
+  const bitmap = await createImageBitmap(blob);
+  const scale = Math.min(1, 1200 / bitmap.width);
+  const width = Math.max(80, Math.round(bitmap.width * scale));
+  const height = Math.max(80, Math.round(bitmap.height * scale));
+  const canvas = document.createElement('canvas'); canvas.width = width; canvas.height = height;
+  const context = canvas.getContext('2d', { willReadFrequently: true });
+  context.drawImage(bitmap, 0, 0, width, height); bitmap.close?.();
+  const pixels = context.getImageData(0, 0, width, height).data;
+  const energy = new Float32Array(width);
+  const top = Math.floor(height * .05), bottom = Math.floor(height * .95), yStep = Math.max(1, Math.floor(height / 500));
+  for (let x = 1; x < width; x++) {
+    let sum = 0, samples = 0;
+    for (let y = top; y < bottom; y += yStep) {
+      const here = (y * width + x) * 4, previous = here - 4;
+      const luma = pixels[here] * .299 + pixels[here + 1] * .587 + pixels[here + 2] * .114;
+      const previousLuma = pixels[previous] * .299 + pixels[previous + 1] * .587 + pixels[previous + 2] * .114;
+      sum += Math.abs(luma - previousLuma); samples++;
+    }
+    energy[x] = sum / Math.max(1, samples);
+  }
+  const smooth = new Float32Array(width), radius = Math.max(1, Math.floor(width / 900));
+  for (let x = 0; x < width; x++) {
+    let sum = 0, count = 0;
+    for (let offset = -radius; offset <= radius; offset++) if (x + offset >= 0 && x + offset < width) { sum += energy[x + offset]; count++; }
+    smooth[x] = sum / count;
+  }
+  const mean = smooth.reduce((sum, value) => sum + value, 0) / width;
+  const deviation = Math.sqrt(smooth.reduce((sum, value) => sum + (value - mean) ** 2, 0) / width);
+  const minimumGap = Math.max(10, Math.floor(width / 100));
+  const peakCandidates = [];
+  for (let x = 2; x < width - 2; x++) if (smooth[x] >= mean + deviation * .75 && smooth[x] >= smooth[x - 1] && smooth[x] >= smooth[x + 1]) peakCandidates.push(x);
+  const selected = [];
+  for (const x of peakCandidates.sort((a, b) => smooth[b] - smooth[a])) {
+    if (selected.every(existing => Math.abs(existing - x) >= minimumGap)) selected.push(x);
+    if (selected.length >= 55) break;
+  }
+  const boundaries = [0, ...selected.sort((a, b) => a - b), width - 1];
+  const minimumWidth = Math.max(10, Math.floor(width / 140)), maximumWidth = Math.max(minimumWidth + 1, Math.floor(width / 7));
+  let results = [];
+  for (let index = 0; index < boundaries.length - 1; index++) {
+    const segmentWidth = boundaries[index + 1] - boundaries[index];
+    if (segmentWidth >= minimumWidth && segmentWidth <= maximumWidth) results.push({ x: boundaries[index] / width, y: .02, w: segmentWidth / width, h: .96 });
+  }
+  if (results.length < 2) {
+    const count = clamp(Math.round(width / Math.max(28, height / 7)), 4, 30);
+    results = Array.from({ length: count }, (_, index) => ({ x: index / count, y: .02, w: 1 / count, h: .96 }));
+  }
+  return results;
+}
+
+function renderDetectedSpines() {
+  const layer = $('spineLayer');
+  layer.innerHTML = state.detectedSpines.map((spine, index) => `<button type="button" class="spine-choice" data-spine="${index}" aria-label="Riconosci dorso ${index + 1}" style="left:${spine.x * 100}%;width:${spine.w * 100}%"></button>`).join('');
+  layer.onclick = async event => {
+    const button = event.target.closest('[data-spine]'); if (!button) return;
+    state.selection = state.detectedSpines[Number(button.dataset.spine)];
+    drawSelection(state.selection); layer.innerHTML = '';
+    await recognizeSelectedSpine();
+  };
+}
+
+async function recognizeSelectedSpine() {
+  setProgress(true, 'Lettura del dorso in entrambe le direzioni…');
+  try {
+    const texts = [];
+    for (const rotation of [90, 270]) {
+      const crop = await cropSpine(state.currentPhoto.blob, state.selection, rotation);
+      const result = await Tesseract.recognize(crop, 'ita+eng', { logger: message => {
+        if (message.progress) setProgress(true, `Lettura dorso ${rotation}° · ${Math.round(message.progress * 100)}%`);
+      }});
+      if (result.data.text?.trim()) texts.push(result.data.text.trim());
+    }
+    const lines = [...new Set(texts.flatMap(text => text.split(/\r?\n/)).map(cleanOcrLine).filter(line => line.length >= 3 && /[A-Za-zÀ-ÿ]/.test(line)))];
+    $('ocrText').value = lines.join('\n');
+    if (!lines.length) throw new Error('testo insufficiente; seleziona il dorso più precisamente');
+    setProgress(true, 'Confronto con pubblicazioni musicali reali…');
+    const releases = await searchMusicBrainzFromText(lines);
+    renderMusicCandidates(releases, lines.join(' '));
+    if (!releases.length) return toast('Nessuna corrispondenza: prova barcode o correzione manuale');
+    const best = releases[0];
+    if (best.smartScore >= 65) applyMusicCandidate(best);
+    toast(`Migliore corrispondenza ${best.smartScore}%: verifica il risultato`);
+  } catch (error) { toast(`Riconoscimento non riuscito: ${error.message}`); }
+  finally { setProgress(false); }
+}
+
+async function cropSpine(blob, rect, rotation) {
+  const bitmap = await createImageBitmap(blob);
+  const sx = Math.round(rect.x * bitmap.width), sy = Math.round(rect.y * bitmap.height);
+  const sw = Math.max(1, Math.round(rect.w * bitmap.width)), sh = Math.max(1, Math.round(rect.h * bitmap.height));
+  const scale = Math.min(4, Math.max(1, 1200 / Math.max(sw, sh)));
+  const canvas = document.createElement('canvas'); canvas.width = Math.round(sh * scale); canvas.height = Math.round(sw * scale);
+  const context = canvas.getContext('2d'); context.imageSmoothingQuality = 'high';
+  context.translate(canvas.width / 2, canvas.height / 2); context.rotate(rotation * Math.PI / 180);
+  context.drawImage(bitmap, sx, sy, sw, sh, -sw * scale / 2, -sh * scale / 2, sw * scale, sh * scale); bitmap.close?.();
+  return await new Promise((resolve, reject) => canvas.toBlob(value => value ? resolve(value) : reject(new Error('ritaglio non disponibile')), 'image/png'));
+}
+
+function cleanOcrLine(value) { return value.replace(/\s+/g, ' ').replace(/^[\s._|,:;\\/-]+|[\s._|,:;\\/-]+$/g, '').trim(); }
 
 async function runOcr() {
   if (!state.currentPhoto) return toast('Prima scegli una fotografia');
@@ -170,18 +290,58 @@ async function searchMusicBrainz() {
     const response = await fetch(`https://musicbrainz.org/ws/2/release/?query=${encodeURIComponent(query)}&fmt=json&limit=6`, { headers: { Accept: 'application/json' } });
     if (!response.ok) throw new Error('servizio non disponibile');
     const data = await response.json();
-    $('candidateList').innerHTML = (data.releases || []).map((release, index) => `<button type="button" class="candidate" data-candidate="${index}"><b>${escapeHtml(release['artist-credit']?.[0]?.name || 'Artista sconosciuto')} — ${escapeHtml(release.title)}</b><small>${escapeHtml((release.date || '').slice(0,4))}</small></button>`).join('');
-    const releases = data.releases || [];
-    $('candidateList').onclick = event => {
-      const button = event.target.closest('[data-candidate]'); if (!button) return;
-      const release = releases[Number(button.dataset.candidate)];
-      $('artistInput').value = release['artist-credit']?.[0]?.name || '';
-      $('titleInput').value = release.title || '';
-      $('yearInput').value = (release.date || '').slice(0,4);
-      $('candidateList').innerHTML = '';
-    };
+    renderMusicCandidates(data.releases || [], `${artist} ${title}`);
   } catch (error) { toast(`Ricerca non riuscita: ${error.message}`); }
   finally { setProgress(false); }
+}
+
+async function searchMusicBrainzFromText(lines) {
+  const useful = lines.filter(line => line.length >= 3).sort((a, b) => b.length - a.length).slice(0, 5);
+  const alternatives = useful.flatMap(line => [`release:"${line.replaceAll('"', '')}"`, `artist:"${line.replaceAll('"', '')}"`]);
+  const query = `(${alternatives.join(' OR ')}) AND format:CD`;
+  const response = await fetch(`https://musicbrainz.org/ws/2/release/?query=${encodeURIComponent(query)}&fmt=json&limit=12`, { headers: { Accept: 'application/json' } });
+  if (!response.ok) throw new Error('MusicBrainz non disponibile');
+  const data = await response.json();
+  const sourceTokens = musicTokens(useful.join(' '));
+  return (data.releases || []).map(release => {
+    const labelInfo = release['label-info']?.[0];
+    const description = `${release['artist-credit']?.[0]?.name || ''} ${release.title || ''} ${labelInfo?.label?.name || ''} ${labelInfo?.['catalog-number'] || ''}`;
+    const candidateTokens = musicTokens(description);
+    const overlap = sourceTokens.length ? sourceTokens.filter(token => candidateTokens.includes(token)).length * 100 / sourceTokens.length : 0;
+    return { ...release, smartScore: Math.max(1, Math.min(100, Math.round((Number(release.score) || 0) * .6 + overlap * .4))) };
+  }).sort((a, b) => b.smartScore - a.smartScore);
+}
+
+function musicTokens(value) {
+  return [...new Set(String(value).toLocaleLowerCase('it').normalize('NFD').replace(/[\u0300-\u036f]/g, '').split(/[^a-z0-9]+/).filter(token => token.length >= 2))];
+}
+
+function renderMusicCandidates(releases, sourceText = '') {
+  const sourceTokens = musicTokens(sourceText);
+  const prepared = releases.map(release => {
+    if (release.smartScore) return release;
+    const artist = release['artist-credit']?.[0]?.name || '';
+    const candidateTokens = musicTokens(`${artist} ${release.title || ''}`);
+    const overlap = sourceTokens.length ? sourceTokens.filter(token => candidateTokens.includes(token)).length * 100 / sourceTokens.length : 0;
+    return { ...release, smartScore: Math.max(Number(release.score) || 0, Math.round(overlap)) };
+  });
+  $('candidateList').innerHTML = prepared.map((release, index) => {
+    const artist = release['artist-credit']?.[0]?.name || 'Artista sconosciuto';
+    const labelInfo = release['label-info']?.[0];
+    const details = [(release.date || '').slice(0,4), release.country, labelInfo?.label?.name, labelInfo?.['catalog-number'], release.smartScore ? `${release.smartScore}%` : ''].filter(Boolean).join(' · ');
+    return `<button type="button" class="candidate" data-candidate="${index}"><b>${escapeHtml(artist)} — ${escapeHtml(release.title || '')}</b><small>${escapeHtml(details)}</small></button>`;
+  }).join('');
+  $('candidateList').onclick = event => {
+    const button = event.target.closest('[data-candidate]'); if (!button) return;
+    applyMusicCandidate(prepared[Number(button.dataset.candidate)]);
+    $('candidateList').innerHTML = '';
+  };
+}
+
+function applyMusicCandidate(release) {
+  $('artistInput').value = release['artist-credit']?.[0]?.name || '';
+  $('titleInput').value = release.title || '';
+  $('yearInput').value = (release.date || '').slice(0,4);
 }
 
 async function saveAlbum(event) {
@@ -215,8 +375,8 @@ async function saveAlbum(event) {
 
 function resetForm() {
   $('albumForm').reset(); $('editingId').value = ''; $('candidateList').innerHTML = '';
-  state.currentPhoto = null; state.selection = null; state.marking = false;
-  $('scanWorkspace').classList.add('hidden'); $('selectionBox').classList.add('hidden'); $('markBtn').textContent = 'Segna dorso';
+  state.currentPhoto = null; state.selection = null; state.detectedSpines = []; state.marking = false;
+  $('scanWorkspace').classList.add('hidden'); $('selectionBox').classList.add('hidden'); $('spineLayer').innerHTML = ''; $('markBtn').textContent = 'Segna dorso';
 }
 
 function bindLibrary() {
