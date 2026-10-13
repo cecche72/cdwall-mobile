@@ -41,10 +41,13 @@ function navigate(name) {
 }
 
 function bindScanning() {
-  $('photoInput').addEventListener('change', async event => {
+  const handlePhoto = async event => {
     const file = event.target.files?.[0];
     if (file) await loadScanPhoto(file);
-  });
+    event.target.value = '';
+  };
+  $('photoInput').addEventListener('change', handlePhoto);
+  $('galleryInput').addEventListener('change', handlePhoto);
   $('ocrBtn').addEventListener('click', runOcr);
   $('smartBtn').addEventListener('click', runSmartRecognition);
   $('barcodeBtn').addEventListener('click', runBarcode);
@@ -296,20 +299,59 @@ async function searchMusicBrainz() {
 }
 
 async function searchMusicBrainzFromText(lines) {
-  const useful = lines.filter(line => line.length >= 3).sort((a, b) => b.length - a.length).slice(0, 5);
-  const alternatives = useful.flatMap(line => [`release:"${line.replaceAll('"', '')}"`, `artist:"${line.replaceAll('"', '')}"`]);
-  const query = `(${alternatives.join(' OR ')}) AND format:CD`;
+  const useful = lines.map(line => line.replace(/\s+/g, ' ').trim()).filter(line => line.length >= 3).slice(0, 8);
+  const hypotheses = buildMusicHypotheses(useful);
+  if (!hypotheses.length) throw new Error('testo insufficiente');
+  const query = hypotheses.slice(0, 20).join(' OR ');
   const response = await fetch(`https://musicbrainz.org/ws/2/release/?query=${encodeURIComponent(query)}&fmt=json&limit=12`, { headers: { Accept: 'application/json' } });
   if (!response.ok) throw new Error('MusicBrainz non disponibile');
   const data = await response.json();
   const sourceTokens = musicTokens(useful.join(' '));
   return (data.releases || []).map(release => {
     const labelInfo = release['label-info']?.[0];
-    const description = `${release['artist-credit']?.[0]?.name || ''} ${release.title || ''} ${labelInfo?.label?.name || ''} ${labelInfo?.['catalog-number'] || ''}`;
-    const candidateTokens = musicTokens(description);
-    const overlap = sourceTokens.length ? sourceTokens.filter(token => candidateTokens.includes(token)).length * 100 / sourceTokens.length : 0;
-    return { ...release, smartScore: Math.max(1, Math.min(100, Math.round((Number(release.score) || 0) * .6 + overlap * .4))) };
+    const candidateTokens = musicTokens(`${release['artist-credit']?.[0]?.name || ''} ${release.title || ''}`);
+    const coverage = candidateTokens.length ? candidateTokens.filter(token => sourceTokens.includes(token)).length * 100 / candidateTokens.length : 0;
+    const formats = [...new Set((release.media || []).map(item => item.format).filter(Boolean))];
+    const cdBonus = formats.some(format => /(^|\s)CD($|\s)/i.test(format)) ? 5 : 0;
+    return { ...release, detectedFormat: formats.join(' + '), smartScore: Math.max(1, Math.min(100, Math.round((Number(release.score) || 0) * .55 + coverage * .45 + cdBonus))) };
   }).sort((a, b) => b.smartScore - a.smartScore);
+}
+
+function buildMusicHypotheses(lines) {
+  const clauses = [];
+  const add = value => { if (value && !clauses.includes(value)) clauses.push(value); };
+  const quote = value => String(value).replace(/["\\]/g, ' ').replace(/\s+/g, ' ').trim();
+  for (const line of lines) {
+    const words = line.match(/[\p{L}\p{N}][\p{L}\p{N}'’&.-]*/gu) || [];
+    let bestStart = -1, bestLength = 0, runStart = -1;
+    for (let index = 0; index <= words.length; index++) {
+      const word = words[index] || '';
+      const upper = word.length >= 3 && word === word.toLocaleUpperCase('it') && word !== word.toLocaleLowerCase('it');
+      if (upper && runStart < 0) runStart = index;
+      if (!upper && runStart >= 0) {
+        if (index - runStart > bestLength) { bestStart = runStart; bestLength = index - runStart; }
+        runStart = -1;
+      }
+    }
+    if (bestLength >= 2) {
+      const artist = quote(words.slice(bestStart, bestStart + bestLength).join(' '));
+      const after = words.slice(bestStart + bestLength).filter(word => word.length >= 2);
+      const before = words.slice(0, bestStart).filter(word => word.length >= 2);
+      for (const titleWords of [after, before]) {
+        for (let count = Math.min(4, titleWords.length); count >= 2; count--) {
+          const title = quote(titleWords.slice(0, count).join(' '));
+          add(`(artist:"${artist}" AND release:"${title}")`);
+        }
+      }
+    }
+    for (let size = Math.min(4, words.length); size >= 2; size--) {
+      for (let start = 0; start + size <= words.length && clauses.length < 20; start++) {
+        const phrase = quote(words.slice(start, start + size).join(' '));
+        if (phrase.length >= 5) { add(`release:"${phrase}"`); add(`artist:"${phrase}"`); }
+      }
+    }
+  }
+  return clauses;
 }
 
 function musicTokens(value) {
@@ -328,7 +370,8 @@ function renderMusicCandidates(releases, sourceText = '') {
   $('candidateList').innerHTML = prepared.map((release, index) => {
     const artist = release['artist-credit']?.[0]?.name || 'Artista sconosciuto';
     const labelInfo = release['label-info']?.[0];
-    const details = [(release.date || '').slice(0,4), release.country, labelInfo?.label?.name, labelInfo?.['catalog-number'], release.smartScore ? `${release.smartScore}%` : ''].filter(Boolean).join(' · ');
+    const format = release.detectedFormat || [...new Set((release.media || []).map(item => item.format).filter(Boolean))].join(' + ');
+    const details = [(release.date || '').slice(0,4), format, release.country, labelInfo?.label?.name, labelInfo?.['catalog-number'], release.smartScore ? `${release.smartScore}%` : ''].filter(Boolean).join(' · ');
     return `<button type="button" class="candidate" data-candidate="${index}"><b>${escapeHtml(artist)} — ${escapeHtml(release.title || '')}</b><small>${escapeHtml(details)}</small></button>`;
   }).join('');
   $('candidateList').onclick = event => {
@@ -430,7 +473,7 @@ async function editAlbum(album, choosePhoto) {
     if (photo) { await loadScanPhoto(photo.blob, photo.id); if (album.ImageWidth > 0) { state.selection = { x: album.ImageX, y: album.ImageY, w: album.ImageWidth, h: album.ImageHeight }; drawSelection(state.selection); } }
   }
   navigate('scan');
-  if (choosePhoto) { $('photoInput').click(); setTimeout(() => { state.marking = true; $('scanStage').classList.add('marking'); $('markBtn').classList.add('active'); }, 400); }
+  if (choosePhoto) { $('galleryInput').click(); setTimeout(() => { state.marking = true; $('scanStage').classList.add('marking'); $('markBtn').classList.add('active'); }, 400); }
 }
 
 function showDuplicates() {

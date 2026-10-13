@@ -40,10 +40,16 @@
 
     <section class="view" data-view="scan">
       <div class="page-title"><span class="eyebrow">NUOVO CD</span><h1>Scansiona e cataloga</h1><p>Fotografa un ripiano o scegli una foto esistente.</p></div>
-      <label class="capture-card">
-        <input id="photoInput" type="file" accept="image/*" capture="environment">
-        <span class="capture-icon">▣</span><b>Apri fotocamera</b><small>oppure scegli dalla libreria Foto</small>
-      </label>
+      <div class="capture-actions">
+        <label class="capture-card">
+          <input id="photoInput" type="file" accept="image/*" capture="environment">
+          <span class="capture-icon">▣</span><b>Scatta foto</b><small>Usa la fotocamera posteriore</small>
+        </label>
+        <label class="capture-card">
+          <input id="galleryInput" type="file" accept="image/*">
+          <span class="capture-icon">▧</span><b>Scegli dalla libreria</b><small>Apri Foto o File su iPhone</small>
+        </label>
+      </div>
       <div id="scanWorkspace" class="hidden">
         <div id="scanStage" class="photo-stage selectable">
           <img id="scanImage" alt="Foto del ripiano">
