@@ -138,50 +138,24 @@ async function runSmartRecognition() {
 
 async function detectSpines(blob) {
   const bitmap = await createImageBitmap(blob);
-  const scale = Math.min(1, 1600 / bitmap.width);
+  const scale = Math.min(1, 1200 / bitmap.width);
   const width = Math.max(80, Math.round(bitmap.width * scale));
   const height = Math.max(80, Math.round(bitmap.height * scale));
   const canvas = document.createElement('canvas'); canvas.width = width; canvas.height = height;
   const context = canvas.getContext('2d', { willReadFrequently: true });
   context.drawImage(bitmap, 0, 0, width, height); bitmap.close?.();
   const pixels = context.getImageData(0, 0, width, height).data;
-  const rowActivity = new Float32Array(height);
-  const xStep = Math.max(1, Math.floor(width / 700));
-  for (let y = 0; y < height; y++) {
-    let sum = 0, samples = 0;
-    for (let x = xStep; x < width; x += xStep) {
-      const here = (y * width + x) * 4, previous = here - xStep * 4;
-      const luma = pixels[here] * .299 + pixels[here + 1] * .587 + pixels[here + 2] * .114;
-      const previousLuma = pixels[previous] * .299 + pixels[previous + 1] * .587 + pixels[previous + 2] * .114;
-      sum += Math.abs(luma - previousLuma); samples++;
-    }
-    rowActivity[y] = sum / Math.max(1, samples);
-  }
-  const rowSorted = [...rowActivity].sort((a, b) => a - b);
-  const rowBase = rowSorted[Math.floor(rowSorted.length * .55)] || 0;
-  const rowHigh = rowSorted[Math.floor(rowSorted.length * .94)] || rowBase;
-  const activeRows = [...rowActivity.keys()].filter(y => rowActivity[y] >= rowBase + (rowHigh - rowBase) * .22);
-  let top = Math.floor(height * .04), bottom = Math.floor(height * .96);
-  if (activeRows.length >= height * .12) {
-    top = activeRows[Math.floor(activeRows.length * .03)];
-    bottom = activeRows[Math.floor(activeRows.length * .97)];
-    const padding = Math.max(3, Math.round((bottom - top) * .025));
-    top = Math.max(0, top - padding); bottom = Math.min(height - 1, bottom + padding);
-  }
-
-  const energy = new Float32Array(width), continuity = new Float32Array(width);
-  const yStep = Math.max(1, Math.floor((bottom - top) / 500));
+  const energy = new Float32Array(width);
+  const top = Math.floor(height * .05), bottom = Math.floor(height * .95), yStep = Math.max(1, Math.floor(height / 500));
   for (let x = 1; x < width; x++) {
-    let sum = 0, strong = 0, samples = 0;
+    let sum = 0, samples = 0;
     for (let y = top; y < bottom; y += yStep) {
       const here = (y * width + x) * 4, previous = here - 4;
       const luma = pixels[here] * .299 + pixels[here + 1] * .587 + pixels[here + 2] * .114;
       const previousLuma = pixels[previous] * .299 + pixels[previous + 1] * .587 + pixels[previous + 2] * .114;
-      const difference = Math.abs(luma - previousLuma);
-      sum += difference; if (difference >= 14) strong++; samples++;
+      sum += Math.abs(luma - previousLuma); samples++;
     }
-    continuity[x] = strong / Math.max(1, samples);
-    energy[x] = (sum / Math.max(1, samples)) * (.55 + continuity[x] * .9);
+    energy[x] = sum / Math.max(1, samples);
   }
   const smooth = new Float32Array(width), radius = Math.max(1, Math.floor(width / 900));
   for (let x = 0; x < width; x++) {
@@ -191,41 +165,24 @@ async function detectSpines(blob) {
   }
   const mean = smooth.reduce((sum, value) => sum + value, 0) / width;
   const deviation = Math.sqrt(smooth.reduce((sum, value) => sum + (value - mean) ** 2, 0) / width);
-  const bandHeight = Math.max(1, bottom - top);
-  const minimumGap = Math.max(5, Math.floor(bandHeight * .018));
+  const minimumGap = Math.max(10, Math.floor(width / 100));
   const peakCandidates = [];
-  for (let x = 2; x < width - 2; x++) if (smooth[x] >= mean + deviation * .55 && continuity[x] >= .08 && smooth[x] >= smooth[x - 1] && smooth[x] >= smooth[x + 1]) peakCandidates.push(x);
+  for (let x = 2; x < width - 2; x++) if (smooth[x] >= mean + deviation * .75 && smooth[x] >= smooth[x - 1] && smooth[x] >= smooth[x + 1]) peakCandidates.push(x);
   const selected = [];
   for (const x of peakCandidates.sort((a, b) => smooth[b] - smooth[a])) {
     if (selected.every(existing => Math.abs(existing - x) >= minimumGap)) selected.push(x);
-    if (selected.length >= 80) break;
+    if (selected.length >= 55) break;
   }
   const boundaries = [0, ...selected.sort((a, b) => a - b), width - 1];
-  const minimumWidth = Math.max(8, Math.floor(bandHeight * .025));
-  while (boundaries.length > 3) {
-    const narrowIndex = boundaries.slice(0, -1).findIndex((value, index) => boundaries[index + 1] - value < minimumWidth);
-    if (narrowIndex < 0) break;
-    if (narrowIndex === 0) boundaries.splice(1, 1);
-    else if (narrowIndex === boundaries.length - 2) boundaries.splice(narrowIndex, 1);
-    else {
-      const leftBoundary = boundaries[narrowIndex], rightBoundary = boundaries[narrowIndex + 1];
-      boundaries.splice(smooth[leftBoundary] < smooth[rightBoundary] ? narrowIndex : narrowIndex + 1, 1);
-    }
-  }
-  const widths = boundaries.slice(0, -1).map((value, index) => boundaries[index + 1] - value).filter(value => value >= minimumWidth);
-  const typicalWidth = widths.length ? [...widths].sort((a, b) => a - b)[Math.floor(widths.length / 2)] : Math.max(20, bandHeight * .07);
-  const refined = [boundaries[0]];
+  const minimumWidth = Math.max(10, Math.floor(width / 140)), maximumWidth = Math.max(minimumWidth + 1, Math.floor(width / 7));
+  let results = [];
   for (let index = 0; index < boundaries.length - 1; index++) {
-    const left = boundaries[index], right = boundaries[index + 1], segmentWidth = right - left;
-    const pieces = segmentWidth > typicalWidth * 2.25 ? Math.max(2, Math.round(segmentWidth / typicalWidth)) : 1;
-    for (let piece = 1; piece <= pieces; piece++) refined.push(Math.round(left + segmentWidth * piece / pieces));
+    const segmentWidth = boundaries[index + 1] - boundaries[index];
+    if (segmentWidth >= minimumWidth && segmentWidth <= maximumWidth) results.push({ x: boundaries[index] / width, y: .02, w: segmentWidth / width, h: .96 });
   }
-  let results = refined.slice(0, -1).map((left, index) => ({
-    x: left / width, y: top / height, w: (refined[index + 1] - left) / width, h: (bottom - top) / height
-  })).filter(rect => rect.w * width >= minimumWidth);
   if (results.length < 2) {
-    const count = clamp(Math.round(width / Math.max(18, bandHeight * .075)), 4, 45);
-    results = Array.from({ length: count }, (_, index) => ({ x: index / count, y: top / height, w: 1 / count, h: (bottom - top) / height }));
+    const count = clamp(Math.round(width / Math.max(28, height / 7)), 4, 30);
+    results = Array.from({ length: count }, (_, index) => ({ x: index / count, y: .02, w: 1 / count, h: .96 }));
   }
   return results;
 }
