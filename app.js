@@ -128,7 +128,7 @@ async function runSmartRecognition() {
     try {
       state.detectedSpines = await detectSpines(state.currentPhoto.blob);
       renderDetectedSpines();
-      toast(`Trovati ${state.detectedSpines.length} possibili dorsi: tocca quello da riconoscere`);
+      toast(`Trovati ${state.detectedSpines.length} possibili dorsi. Tocca un riquadro; se è impreciso usa “Segna dorso”`);
     } catch (error) { toast(`Rilevamento non riuscito: ${error.message}`); }
     finally { setProgress(false); }
     return;
@@ -138,24 +138,50 @@ async function runSmartRecognition() {
 
 async function detectSpines(blob) {
   const bitmap = await createImageBitmap(blob);
-  const scale = Math.min(1, 1200 / bitmap.width);
+  const scale = Math.min(1, 1600 / bitmap.width);
   const width = Math.max(80, Math.round(bitmap.width * scale));
   const height = Math.max(80, Math.round(bitmap.height * scale));
   const canvas = document.createElement('canvas'); canvas.width = width; canvas.height = height;
   const context = canvas.getContext('2d', { willReadFrequently: true });
   context.drawImage(bitmap, 0, 0, width, height); bitmap.close?.();
   const pixels = context.getImageData(0, 0, width, height).data;
-  const energy = new Float32Array(width);
-  const top = Math.floor(height * .05), bottom = Math.floor(height * .95), yStep = Math.max(1, Math.floor(height / 500));
-  for (let x = 1; x < width; x++) {
+  const rowActivity = new Float32Array(height);
+  const xStep = Math.max(1, Math.floor(width / 700));
+  for (let y = 0; y < height; y++) {
     let sum = 0, samples = 0;
-    for (let y = top; y < bottom; y += yStep) {
-      const here = (y * width + x) * 4, previous = here - 4;
+    for (let x = xStep; x < width; x += xStep) {
+      const here = (y * width + x) * 4, previous = here - xStep * 4;
       const luma = pixels[here] * .299 + pixels[here + 1] * .587 + pixels[here + 2] * .114;
       const previousLuma = pixels[previous] * .299 + pixels[previous + 1] * .587 + pixels[previous + 2] * .114;
       sum += Math.abs(luma - previousLuma); samples++;
     }
-    energy[x] = sum / Math.max(1, samples);
+    rowActivity[y] = sum / Math.max(1, samples);
+  }
+  const rowSorted = [...rowActivity].sort((a, b) => a - b);
+  const rowBase = rowSorted[Math.floor(rowSorted.length * .55)] || 0;
+  const rowHigh = rowSorted[Math.floor(rowSorted.length * .94)] || rowBase;
+  const activeRows = [...rowActivity.keys()].filter(y => rowActivity[y] >= rowBase + (rowHigh - rowBase) * .22);
+  let top = Math.floor(height * .04), bottom = Math.floor(height * .96);
+  if (activeRows.length >= height * .12) {
+    top = activeRows[Math.floor(activeRows.length * .03)];
+    bottom = activeRows[Math.floor(activeRows.length * .97)];
+    const padding = Math.max(3, Math.round((bottom - top) * .025));
+    top = Math.max(0, top - padding); bottom = Math.min(height - 1, bottom + padding);
+  }
+
+  const energy = new Float32Array(width), continuity = new Float32Array(width);
+  const yStep = Math.max(1, Math.floor((bottom - top) / 500));
+  for (let x = 1; x < width; x++) {
+    let sum = 0, strong = 0, samples = 0;
+    for (let y = top; y < bottom; y += yStep) {
+      const here = (y * width + x) * 4, previous = here - 4;
+      const luma = pixels[here] * .299 + pixels[here + 1] * .587 + pixels[here + 2] * .114;
+      const previousLuma = pixels[previous] * .299 + pixels[previous + 1] * .587 + pixels[previous + 2] * .114;
+      const difference = Math.abs(luma - previousLuma);
+      sum += difference; if (difference >= 14) strong++; samples++;
+    }
+    continuity[x] = strong / Math.max(1, samples);
+    energy[x] = (sum / Math.max(1, samples)) * (.55 + continuity[x] * .9);
   }
   const smooth = new Float32Array(width), radius = Math.max(1, Math.floor(width / 900));
   for (let x = 0; x < width; x++) {
@@ -165,31 +191,48 @@ async function detectSpines(blob) {
   }
   const mean = smooth.reduce((sum, value) => sum + value, 0) / width;
   const deviation = Math.sqrt(smooth.reduce((sum, value) => sum + (value - mean) ** 2, 0) / width);
-  const minimumGap = Math.max(10, Math.floor(width / 100));
+  const bandHeight = Math.max(1, bottom - top);
+  const minimumGap = Math.max(5, Math.floor(bandHeight * .018));
   const peakCandidates = [];
-  for (let x = 2; x < width - 2; x++) if (smooth[x] >= mean + deviation * .75 && smooth[x] >= smooth[x - 1] && smooth[x] >= smooth[x + 1]) peakCandidates.push(x);
+  for (let x = 2; x < width - 2; x++) if (smooth[x] >= mean + deviation * .55 && continuity[x] >= .08 && smooth[x] >= smooth[x - 1] && smooth[x] >= smooth[x + 1]) peakCandidates.push(x);
   const selected = [];
   for (const x of peakCandidates.sort((a, b) => smooth[b] - smooth[a])) {
     if (selected.every(existing => Math.abs(existing - x) >= minimumGap)) selected.push(x);
-    if (selected.length >= 55) break;
+    if (selected.length >= 80) break;
   }
   const boundaries = [0, ...selected.sort((a, b) => a - b), width - 1];
-  const minimumWidth = Math.max(10, Math.floor(width / 140)), maximumWidth = Math.max(minimumWidth + 1, Math.floor(width / 7));
-  let results = [];
-  for (let index = 0; index < boundaries.length - 1; index++) {
-    const segmentWidth = boundaries[index + 1] - boundaries[index];
-    if (segmentWidth >= minimumWidth && segmentWidth <= maximumWidth) results.push({ x: boundaries[index] / width, y: .02, w: segmentWidth / width, h: .96 });
+  const minimumWidth = Math.max(8, Math.floor(bandHeight * .025));
+  while (boundaries.length > 3) {
+    const narrowIndex = boundaries.slice(0, -1).findIndex((value, index) => boundaries[index + 1] - value < minimumWidth);
+    if (narrowIndex < 0) break;
+    if (narrowIndex === 0) boundaries.splice(1, 1);
+    else if (narrowIndex === boundaries.length - 2) boundaries.splice(narrowIndex, 1);
+    else {
+      const leftBoundary = boundaries[narrowIndex], rightBoundary = boundaries[narrowIndex + 1];
+      boundaries.splice(smooth[leftBoundary] < smooth[rightBoundary] ? narrowIndex : narrowIndex + 1, 1);
+    }
   }
+  const widths = boundaries.slice(0, -1).map((value, index) => boundaries[index + 1] - value).filter(value => value >= minimumWidth);
+  const typicalWidth = widths.length ? [...widths].sort((a, b) => a - b)[Math.floor(widths.length / 2)] : Math.max(20, bandHeight * .07);
+  const refined = [boundaries[0]];
+  for (let index = 0; index < boundaries.length - 1; index++) {
+    const left = boundaries[index], right = boundaries[index + 1], segmentWidth = right - left;
+    const pieces = segmentWidth > typicalWidth * 2.25 ? Math.max(2, Math.round(segmentWidth / typicalWidth)) : 1;
+    for (let piece = 1; piece <= pieces; piece++) refined.push(Math.round(left + segmentWidth * piece / pieces));
+  }
+  let results = refined.slice(0, -1).map((left, index) => ({
+    x: left / width, y: top / height, w: (refined[index + 1] - left) / width, h: (bottom - top) / height
+  })).filter(rect => rect.w * width >= minimumWidth);
   if (results.length < 2) {
-    const count = clamp(Math.round(width / Math.max(28, height / 7)), 4, 30);
-    results = Array.from({ length: count }, (_, index) => ({ x: index / count, y: .02, w: 1 / count, h: .96 }));
+    const count = clamp(Math.round(width / Math.max(18, bandHeight * .075)), 4, 45);
+    results = Array.from({ length: count }, (_, index) => ({ x: index / count, y: top / height, w: 1 / count, h: (bottom - top) / height }));
   }
   return results;
 }
 
 function renderDetectedSpines() {
   const layer = $('spineLayer');
-  layer.innerHTML = state.detectedSpines.map((spine, index) => `<button type="button" class="spine-choice" data-spine="${index}" aria-label="Riconosci dorso ${index + 1}" style="left:${spine.x * 100}%;width:${spine.w * 100}%"></button>`).join('');
+  layer.innerHTML = state.detectedSpines.map((spine, index) => `<button type="button" class="spine-choice" data-spine="${index}" aria-label="Riconosci dorso ${index + 1}" style="left:${spine.x * 100}%;top:${spine.y * 100}%;width:${spine.w * 100}%;height:${spine.h * 100}%"></button>`).join('');
   layer.onclick = async event => {
     const button = event.target.closest('[data-spine]'); if (!button) return;
     state.selection = state.detectedSpines[Number(button.dataset.spine)];
@@ -199,15 +242,32 @@ function renderDetectedSpines() {
 }
 
 async function recognizeSelectedSpine() {
-  setProgress(true, 'Lettura del dorso in entrambe le direzioni…');
+  setProgress(true, 'Preparazione del dorso e miglioramento del contrasto…');
   try {
     const texts = [];
+    const variants = [];
     for (const rotation of [90, 270]) {
-      const crop = await cropSpine(state.currentPhoto.blob, state.selection, rotation);
-      const result = await Tesseract.recognize(crop, 'ita+eng', { logger: message => {
-        if (message.progress) setProgress(true, `Lettura dorso ${rotation}° · ${Math.round(message.progress * 100)}%`);
-      }});
-      if (result.data.text?.trim()) texts.push(result.data.text.trim());
+      variants.push({ rotation, enhanced: false, image: await cropSpine(state.currentPhoto.blob, state.selection, rotation, false) });
+      variants.push({ rotation, enhanced: true, image: await cropSpine(state.currentPhoto.blob, state.selection, rotation, true) });
+    }
+    const logger = message => {
+      if (message.progress) setProgress(true, `Lettura OCR migliorata · ${Math.round(message.progress * 100)}%`);
+    };
+    if (Tesseract.createWorker) {
+      const worker = await Tesseract.createWorker('ita+eng', 1, { logger });
+      try {
+        await worker.setParameters({ tessedit_pageseg_mode: '7', preserve_interword_spaces: '1' });
+        for (let index = 0; index < variants.length; index++) {
+          setProgress(true, `Lettura variante ${index + 1} di ${variants.length}…`);
+          const result = await worker.recognize(variants[index].image);
+          if (result.data.text?.trim()) texts.push(result.data.text.trim());
+        }
+      } finally { await worker.terminate(); }
+    } else {
+      for (const variant of variants) {
+        const result = await Tesseract.recognize(variant.image, 'ita+eng', { logger, tessedit_pageseg_mode: '7', preserve_interword_spaces: '1' });
+        if (result.data.text?.trim()) texts.push(result.data.text.trim());
+      }
     }
     const lines = [...new Set(texts.flatMap(text => text.split(/\r?\n/)).map(cleanOcrLine).filter(line => line.length >= 3 && /[A-Za-zÀ-ÿ]/.test(line)))];
     $('ocrText').value = lines.join('\n');
@@ -223,16 +283,49 @@ async function recognizeSelectedSpine() {
   finally { setProgress(false); }
 }
 
-async function cropSpine(blob, rect, rotation) {
+async function cropSpine(blob, rect, rotation, enhanced = false) {
   const bitmap = await createImageBitmap(blob);
-  const sx = Math.round(rect.x * bitmap.width), sy = Math.round(rect.y * bitmap.height);
-  const sw = Math.max(1, Math.round(rect.w * bitmap.width)), sh = Math.max(1, Math.round(rect.h * bitmap.height));
-  const scale = Math.min(4, Math.max(1, 1200 / Math.max(sw, sh)));
-  const canvas = document.createElement('canvas'); canvas.width = Math.round(sh * scale); canvas.height = Math.round(sw * scale);
+  const horizontalPadding = Math.max(1, Math.round(rect.w * bitmap.width * .04));
+  const verticalPadding = Math.max(1, Math.round(rect.h * bitmap.height * .012));
+  const sx = Math.max(0, Math.round(rect.x * bitmap.width) - horizontalPadding), sy = Math.max(0, Math.round(rect.y * bitmap.height) - verticalPadding);
+  const sw = Math.max(1, Math.min(bitmap.width - sx, Math.round(rect.w * bitmap.width) + horizontalPadding * 2));
+  const sh = Math.max(1, Math.min(bitmap.height - sy, Math.round(rect.h * bitmap.height) + verticalPadding * 2));
+  const scale = Math.min(6, Math.max(1, 88 / sw, 1500 / sh), 2400 / sh);
+  const padding = Math.max(12, Math.round(sw * scale * .18));
+  const canvas = document.createElement('canvas'); canvas.width = Math.round(sh * scale) + padding * 2; canvas.height = Math.round(sw * scale) + padding * 2;
   const context = canvas.getContext('2d'); context.imageSmoothingQuality = 'high';
+  context.fillStyle = '#fff'; context.fillRect(0, 0, canvas.width, canvas.height);
   context.translate(canvas.width / 2, canvas.height / 2); context.rotate(rotation * Math.PI / 180);
   context.drawImage(bitmap, sx, sy, sw, sh, -sw * scale / 2, -sh * scale / 2, sw * scale, sh * scale); bitmap.close?.();
+  if (enhanced) enhanceSpineCanvas(canvas, context);
   return await new Promise((resolve, reject) => canvas.toBlob(value => value ? resolve(value) : reject(new Error('ritaglio non disponibile')), 'image/png'));
+}
+
+function enhanceSpineCanvas(canvas, transformedContext) {
+  transformedContext.setTransform(1, 0, 0, 1, 0, 0);
+  const image = transformedContext.getImageData(0, 0, canvas.width, canvas.height), data = image.data;
+  const histogram = new Uint32Array(256); let sum = 0, count = 0;
+  for (let index = 0; index < data.length; index += 4) {
+    const value = Math.round(data[index] * .299 + data[index + 1] * .587 + data[index + 2] * .114);
+    histogram[value]++; sum += value; count++;
+  }
+  let totalSum = 0; for (let value = 0; value < 256; value++) totalSum += value * histogram[value];
+  let backgroundWeight = 0, backgroundSum = 0, bestVariance = -1, threshold = 128;
+  for (let value = 0; value < 256; value++) {
+    backgroundWeight += histogram[value]; if (!backgroundWeight || backgroundWeight === count) continue;
+    backgroundSum += value * histogram[value];
+    const foregroundWeight = count - backgroundWeight;
+    const difference = backgroundSum / backgroundWeight - (totalSum - backgroundSum) / foregroundWeight;
+    const variance = backgroundWeight * foregroundWeight * difference * difference;
+    if (variance > bestVariance) { bestVariance = variance; threshold = value; }
+  }
+  const invert = sum / Math.max(1, count) < 128;
+  for (let index = 0; index < data.length; index += 4) {
+    const luma = data[index] * .299 + data[index + 1] * .587 + data[index + 2] * .114;
+    let value = luma >= threshold ? 255 : 0; if (invert) value = 255 - value;
+    data[index] = data[index + 1] = data[index + 2] = value; data[index + 3] = 255;
+  }
+  transformedContext.putImageData(image, 0, 0);
 }
 
 function cleanOcrLine(value) { return value.replace(/\s+/g, ' ').replace(/^[\s._|,:;\\/-]+|[\s._|,:;\\/-]+$/g, '').trim(); }
