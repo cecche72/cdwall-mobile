@@ -383,11 +383,18 @@ async function searchMusicBrainz() {
   setProgress(true, 'Ricerca su MusicBrainz…');
   try {
     const query = barcode ? `barcode:${barcode}` : [artist && `artist:"${artist}"`, title && `release:"${title}"`].filter(Boolean).join(' AND ');
-    const response = await fetch(`https://musicbrainz.org/ws/2/release/?query=${encodeURIComponent(query)}&fmt=json&limit=6`, { headers: { Accept: 'application/json' } });
+    const response = await fetchWithRetry(`https://musicbrainz.org/ws/2/release/?query=${encodeURIComponent(query)}&fmt=json&limit=6`, { headers: { Accept: 'application/json' } });
     if (!response.ok) throw new Error('servizio non disponibile');
     const data = await response.json();
-    renderMusicCandidates(data.releases || [], `${artist} ${title}`);
-  } catch (error) { toast(`Ricerca non riuscita: ${error.message}`); }
+    let releases = data.releases || [];
+    if (!releases.length && !barcode) releases = await searchITunesFromText([`${artist} ${title}`]);
+    renderMusicCandidates(releases, `${artist} ${title}`);
+  } catch (error) {
+    if (!barcode) {
+      try { renderMusicCandidates(await searchITunesFromText([`${artist} ${title}`]), `${artist} ${title}`); toast('MusicBrainz non risponde: risultati dal catalogo Apple Music'); }
+      catch { toast('Cataloghi musicali temporaneamente non disponibili: riprova tra qualche minuto'); }
+    } else toast('Catalogo temporaneamente non disponibile: riprova tra qualche minuto');
+  }
   finally { setProgress(false); }
 }
 
@@ -396,11 +403,15 @@ async function searchMusicBrainzFromText(lines) {
   const hypotheses = buildMusicHypotheses(useful);
   if (!hypotheses.length) throw new Error('testo insufficiente');
   const query = hypotheses.slice(0, 20).join(' OR ');
-  const response = await fetch(`https://musicbrainz.org/ws/2/release/?query=${encodeURIComponent(query)}&fmt=json&limit=12`, { headers: { Accept: 'application/json' } });
-  if (!response.ok) throw new Error('MusicBrainz non disponibile');
-  const data = await response.json();
+  let releases;
+  try {
+    const response = await fetchWithRetry(`https://musicbrainz.org/ws/2/release/?query=${encodeURIComponent(query)}&fmt=json&limit=12`, { headers: { Accept: 'application/json' } });
+    if (!response.ok) throw new Error('MusicBrainz non disponibile');
+    const data = await response.json(); releases = data.releases || [];
+  } catch { releases = await searchITunesFromText(useful); }
+  if (!releases.length) releases = await searchITunesFromText(useful);
   const sourceTokens = musicTokens(useful.join(' '));
-  return (data.releases || []).map(release => {
+  return releases.map(release => {
     const labelInfo = release['label-info']?.[0];
     const candidateTokens = musicTokens(`${release['artist-credit']?.[0]?.name || ''} ${release.title || ''}`);
     const coverage = candidateTokens.length ? candidateTokens.filter(token => sourceTokens.includes(token)).length * 100 / candidateTokens.length : 0;
@@ -408,6 +419,50 @@ async function searchMusicBrainzFromText(lines) {
     const cdBonus = formats.some(format => /(^|\s)CD($|\s)/i.test(format)) ? 5 : 0;
     return { ...release, detectedFormat: formats.join(' + '), smartScore: Math.max(1, Math.min(100, Math.round((Number(release.score) || 0) * .55 + coverage * .45 + cdBonus))) };
   }).sort((a, b) => b.smartScore - a.smartScore);
+}
+
+async function fetchWithRetry(url, options = {}) {
+  let response;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    response = await fetch(url, options);
+    if (response.ok || ![429, 502, 503, 504].includes(response.status)) return response;
+    if (attempt < 2) {
+      const retrySeconds = Number(response.headers.get('Retry-After'));
+      await new Promise(resolve => setTimeout(resolve, Number.isFinite(retrySeconds) ? Math.min(4000, retrySeconds * 1000) : 900 * (attempt + 1)));
+    }
+  }
+  return response;
+}
+
+async function searchITunesFromText(lines) {
+  const queries = [];
+  for (const line of lines) {
+    const words = String(line).match(/[\p{L}\p{N}][\p{L}\p{N}'’&.-]*/gu) || [];
+    let bestStart = -1, bestLength = 0, runStart = -1;
+    for (let index = 0; index <= words.length; index++) {
+      const word = words[index] || '';
+      const upper = word.length >= 3 && word === word.toLocaleUpperCase('it') && word !== word.toLocaleLowerCase('it');
+      if (upper && runStart < 0) runStart = index;
+      if (!upper && runStart >= 0) {
+        if (index - runStart > bestLength) { bestStart = runStart; bestLength = index - runStart; }
+        runStart = -1;
+      }
+    }
+    if (bestLength >= 2) queries.push(words.slice(bestStart, Math.min(words.length, bestStart + bestLength + 4)).join(' '));
+    if (words.length >= 2) queries.push(words.slice(0, 8).join(' '));
+  }
+  for (const term of [...new Set(queries)].slice(0, 3)) {
+    const response = await fetchWithRetry(`https://itunes.apple.com/search?term=${encodeURIComponent(term)}&entity=album&limit=12&country=IT`);
+    if (!response.ok) continue;
+    const data = await response.json();
+    if (data.results?.length) return data.results.map(item => ({
+      id: `itunes:${item.collectionId || ''}`, title: item.collectionName || '', date: item.releaseDate || '', country: item.country || '',
+      score: 70, detectedFormat: 'Catalogo Apple Music', media: [{ format: 'Catalogo Apple Music' }],
+      'artist-credit': [{ name: item.artistName || 'Artista sconosciuto' }],
+      'label-info': [{ label: { name: item.primaryGenreName || '' }, 'catalog-number': '' }]
+    }));
+  }
+  return [];
 }
 
 function buildMusicHypotheses(lines) {
