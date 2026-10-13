@@ -1,7 +1,7 @@
 import { db } from './db.js';
 
 const $ = id => document.getElementById(id);
-const state = { albums: [], photos: [], currentPhoto: null, selection: null, detectedSpines: [], marking: false, dragStart: null, highlightedId: null, deferredInstall: null };
+const state = { albums: [], photos: [], currentPhoto: null, selection: null, detectedSpines: [], marking: false, dragStart: null, editingSpines: false, editingSpineIndex: null, replaceEditedSpine: false, highlightedId: null, deferredInstall: null };
 const views = [...document.querySelectorAll('.view')];
 
 document.addEventListener('DOMContentLoaded', init);
@@ -58,6 +58,14 @@ function bindScanning() {
     $('markBtn').classList.toggle('active', state.marking);
     toast(state.marking ? 'Trascina un riquadro sul dorso del CD' : 'Selezione disattivata');
   });
+  $('editSpinesBtn').addEventListener('click', beginSpineEditing);
+  $('addSpineBtn').addEventListener('click', () => beginSpineDrawing(false));
+  $('redrawSpineBtn').addEventListener('click', () => {
+    if (state.editingSpineIndex === null) return toast('Prima seleziona il riquadro da ridisegnare');
+    beginSpineDrawing(true);
+  });
+  $('deleteSpineBtn').addEventListener('click', deleteSelectedSpine);
+  $('finishSpinesBtn').addEventListener('click', finishSpineEditing);
   const stage = $('scanStage');
   stage.addEventListener('pointerdown', selectionStart);
   stage.addEventListener('pointermove', selectionMove);
@@ -73,10 +81,14 @@ async function loadScanPhoto(blob, existingPhotoId = null) {
   state.currentPhoto = { blob, url, id: existingPhotoId };
   state.selection = null;
   state.detectedSpines = [];
+  state.editingSpines = false;
+  state.editingSpineIndex = null;
   $('scanImage').src = url;
   $('scanWorkspace').classList.remove('hidden');
   $('selectionBox').classList.add('hidden');
   $('spineLayer').innerHTML = '';
+  $('editSpinesBtn').classList.add('hidden');
+  $('editSpinesPanel').classList.add('hidden');
 }
 
 function pointPercent(event) {
@@ -105,12 +117,64 @@ function selectionEnd(event) {
   state.dragStart = null;
   if (rect.w < .01 || rect.h < .02) return toast('Riquadro troppo piccolo: riprova');
   state.selection = rect;
+  if (state.editingSpines) {
+    if (state.replaceEditedSpine && state.editingSpineIndex !== null) state.detectedSpines[state.editingSpineIndex] = rect;
+    else { state.detectedSpines.push(rect); state.editingSpineIndex = state.detectedSpines.length - 1; }
+    state.replaceEditedSpine = false;
+    renderDetectedSpines();
+  }
   state.marking = false;
   $('scanStage').classList.remove('marking');
+  $('spineLayer').classList.remove('drawing');
   $('markBtn').classList.remove('active');
   $('markBtn').textContent = 'Posizione segnata ✓';
   drawSelection(rect);
-  toast('Posizione del CD memorizzata');
+  toast(state.editingSpines ? 'Riquadro aggiornato' : 'Posizione del CD memorizzata');
+}
+
+function beginSpineEditing() {
+  if (!state.detectedSpines.length) return;
+  state.editingSpines = true;
+  state.editingSpineIndex = null;
+  state.selection = null;
+  $('selectionBox').classList.add('hidden');
+  $('editSpinesBtn').classList.add('hidden');
+  $('editSpinesPanel').classList.remove('hidden');
+  renderDetectedSpines();
+  toast('Tocca un riquadro per ridisegnarlo o eliminarlo');
+}
+
+function beginSpineDrawing(replace) {
+  state.replaceEditedSpine = replace;
+  state.marking = true;
+  $('scanStage').classList.add('marking');
+  $('spineLayer').classList.add('drawing');
+  toast(replace ? 'Trascina il nuovo contorno del riquadro' : 'Trascina un riquadro sul dorso mancante');
+}
+
+function deleteSelectedSpine() {
+  if (state.editingSpineIndex === null) return toast('Prima seleziona il riquadro da eliminare');
+  state.detectedSpines.splice(state.editingSpineIndex, 1);
+  state.editingSpineIndex = null;
+  state.selection = null;
+  $('selectionBox').classList.add('hidden');
+  renderDetectedSpines();
+  toast('Riquadro eliminato');
+}
+
+function finishSpineEditing() {
+  state.editingSpines = false;
+  state.editingSpineIndex = null;
+  state.replaceEditedSpine = false;
+  state.marking = false;
+  state.selection = null;
+  $('scanStage').classList.remove('marking');
+  $('spineLayer').classList.remove('drawing');
+  $('selectionBox').classList.add('hidden');
+  $('editSpinesPanel').classList.add('hidden');
+  $('editSpinesBtn').classList.toggle('hidden', !state.detectedSpines.length);
+  renderDetectedSpines();
+  toast(`${state.detectedSpines.length} riquadri pronti: tocca un dorso per riconoscerlo`);
 }
 
 function rectFromPoints(a, b) { return { x: Math.min(a.x, b.x), y: Math.min(a.y, b.y), w: Math.abs(a.x - b.x), h: Math.abs(a.y - b.y) }; }
@@ -128,7 +192,8 @@ async function runSmartRecognition() {
     try {
       state.detectedSpines = await detectSpines(state.currentPhoto.blob);
       renderDetectedSpines();
-      toast(`Trovati ${state.detectedSpines.length} possibili dorsi. Tocca un riquadro; se è impreciso usa “Segna dorso”`);
+      $('editSpinesBtn').classList.toggle('hidden', !state.detectedSpines.length);
+      toast(`Trovati ${state.detectedSpines.length} possibili dorsi. Puoi correggere i riquadri prima del riconoscimento`);
     } catch (error) { toast(`Rilevamento non riuscito: ${error.message}`); }
     finally { setProgress(false); }
     return;
@@ -145,55 +210,114 @@ async function detectSpines(blob) {
   const context = canvas.getContext('2d', { willReadFrequently: true });
   context.drawImage(bitmap, 0, 0, width, height); bitmap.close?.();
   const pixels = context.getImageData(0, 0, width, height).data;
-  const energy = new Float32Array(width);
-  const top = Math.floor(height * .05), bottom = Math.floor(height * .95), yStep = Math.max(1, Math.floor(height / 500));
-  for (let x = 1; x < width; x++) {
-    let sum = 0, samples = 0;
-    for (let y = top; y < bottom; y += yStep) {
-      const here = (y * width + x) * 4, previous = here - 4;
-      const luma = pixels[here] * .299 + pixels[here + 1] * .587 + pixels[here + 2] * .114;
-      const previousLuma = pixels[previous] * .299 + pixels[previous + 1] * .587 + pixels[previous + 2] * .114;
-      sum += Math.abs(luma - previousLuma); samples++;
+  const lumaAt = (x, y) => { const i = (y * width + x) * 4; return pixels[i] * .299 + pixels[i + 1] * .587 + pixels[i + 2] * .114; };
+  const smoothValues = (values, radius) => {
+    const result = new Float32Array(values.length);
+    for (let i = 0; i < values.length; i++) {
+      let sum = 0, count = 0;
+      for (let offset = -radius; offset <= radius; offset++) if (i + offset >= 0 && i + offset < values.length) { sum += values[i + offset]; count++; }
+      result[i] = sum / Math.max(1, count);
     }
-    energy[x] = sum / Math.max(1, samples);
+    return result;
+  };
+
+  const rowScores = new Float32Array(height), xStep = Math.max(1, Math.floor(width / 700));
+  for (let y = 1; y < height; y++) {
+    let sum = 0, strong = 0, samples = 0;
+    for (let x = 1; x < width; x += xStep) {
+      const difference = Math.abs(lumaAt(x, y) - lumaAt(x, y - 1));
+      sum += difference; if (difference >= 16) strong++; samples++;
+    }
+    rowScores[y] = sum / Math.max(1, samples) + 18 * strong / Math.max(1, samples);
   }
-  const smooth = new Float32Array(width), radius = Math.max(1, Math.floor(width / 900));
-  for (let x = 0; x < width; x++) {
-    let sum = 0, count = 0;
-    for (let offset = -radius; offset <= radius; offset++) if (x + offset >= 0 && x + offset < width) { sum += energy[x + offset]; count++; }
-    smooth[x] = sum / count;
+  const rows = smoothValues(rowScores, Math.max(1, Math.floor(height / 900)));
+  const searchEnd = Math.max(3, Math.floor(height * .62));
+  const upper = Array.from(rows.slice(1, searchEnd));
+  const rowMean = upper.reduce((sum, value) => sum + value, 0) / upper.length;
+  const rowDeviation = Math.sqrt(upper.reduce((sum, value) => sum + (value - rowMean) ** 2, 0) / upper.length);
+  const rowCandidates = [];
+  for (let y = 2; y < searchEnd - 1; y++) if (rows[y] >= rowMean + rowDeviation * .9 && rows[y] >= rows[y - 1] && rows[y] >= rows[y + 1]) rowCandidates.push(y);
+  const rowPeaks = [];
+  const rowGap = Math.max(8, Math.floor(height / 45));
+  for (const y of rowCandidates.sort((a, b) => rows[b] - rows[a])) if (rowPeaks.every(existing => Math.abs(existing - y) >= rowGap)) rowPeaks.push(y);
+  rowPeaks.sort((a, b) => a - b);
+  let top = Math.max(1, Math.floor(height / 25));
+  if (rowPeaks.length >= 3 && rowPeaks.at(-1) - rowPeaks[0] >= height * .12) top = Math.min(Math.floor(height * .55), rowPeaks.at(-1) + Math.max(2, Math.floor(height / 250)));
+  const bottom = Math.min(height - 1, height - Math.floor(height / 40));
+  const bandHeight = Math.max(1, bottom - top);
+  const energy = new Float32Array(width);
+  const yStep = Math.max(1, Math.floor(bandHeight / 520)), allowedGap = Math.max(3, Math.floor(bandHeight / 45));
+  for (let x = 1; x < width; x++) {
+    let sum = 0, samples = 0, strong = 0, run = 0, longestRun = 0, gap = 0;
+    for (let y = top; y < bottom; y += yStep) {
+      const difference = Math.abs(lumaAt(x, y) - lumaAt(x - 1, y));
+      sum += difference; samples++;
+      if (difference >= 11) { strong++; run += gap + 1; gap = 0; longestRun = Math.max(longestRun, run); }
+      else if (++gap > allowedGap / yStep) { run = 0; gap = 0; }
+    }
+    energy[x] = sum / samples + 12 * strong / samples + 28 * longestRun / samples;
   }
-  const mean = smooth.reduce((sum, value) => sum + value, 0) / width;
-  const deviation = Math.sqrt(smooth.reduce((sum, value) => sum + (value - mean) ** 2, 0) / width);
-  const minimumGap = Math.max(10, Math.floor(width / 100));
+  const smooth = smoothValues(energy, Math.max(1, Math.floor(width / 1100)));
+  const minimumGap = Math.max(10, Math.floor(width / 120), Math.floor(bandHeight * .03)), localRadius = Math.max(30, Math.floor(width / 12));
   const peakCandidates = [];
-  for (let x = 2; x < width - 2; x++) if (smooth[x] >= mean + deviation * .75 && smooth[x] >= smooth[x - 1] && smooth[x] >= smooth[x + 1]) peakCandidates.push(x);
+  for (let x = 2; x < width - 2; x++) {
+    if (smooth[x] < smooth[x - 1] || smooth[x] < smooth[x + 1]) continue;
+    const local = Array.from(smooth.slice(Math.max(1, x - localRadius), Math.min(width - 1, x + localRadius)));
+    const mean = local.reduce((sum, value) => sum + value, 0) / local.length;
+    const deviation = Math.sqrt(local.reduce((sum, value) => sum + (value - mean) ** 2, 0) / local.length);
+    if (smooth[x] >= mean + deviation * .62) peakCandidates.push(x);
+  }
   const selected = [];
   for (const x of peakCandidates.sort((a, b) => smooth[b] - smooth[a])) {
     if (selected.every(existing => Math.abs(existing - x) >= minimumGap)) selected.push(x);
-    if (selected.length >= 55) break;
+    if (selected.length >= 70) break;
   }
-  const boundaries = [0, ...selected.sort((a, b) => a - b), width - 1];
-  const minimumWidth = Math.max(10, Math.floor(width / 140)), maximumWidth = Math.max(minimumWidth + 1, Math.floor(width / 7));
-  let results = [];
+  let boundaries = [0, ...selected.sort((a, b) => a - b), width - 1];
+  const minimumWidth = Math.max(9, Math.floor(width / 145), Math.floor(bandHeight * .03));
+  let changed = true;
+  while (changed && boundaries.length > 2) {
+    changed = false;
+    for (let index = 0; index < boundaries.length - 1; index++) if (boundaries[index + 1] - boundaries[index] < minimumWidth) {
+      if (index === 0) boundaries.splice(1, 1);
+      else if (index === boundaries.length - 2) boundaries.splice(index, 1);
+      else if (smooth[boundaries[index]] < smooth[boundaries[index + 1]]) boundaries.splice(index, 1);
+      else boundaries.splice(index + 1, 1);
+      changed = true; break;
+    }
+  }
+  const plausibleMin = Math.max(9, Math.floor(bandHeight * .035)), plausibleMax = Math.max(plausibleMin + 1, Math.floor(bandHeight * .14));
+  const plausible = boundaries.slice(0, -1).map((left, index) => boundaries[index + 1] - left).filter(gap => gap >= plausibleMin && gap <= plausibleMax).sort((a, b) => a - b);
+  const typical = plausible.length ? plausible[Math.floor(plausible.length / 2)] : Math.max(22, Math.floor(width / 35));
+  const split = [boundaries[0]];
   for (let index = 0; index < boundaries.length - 1; index++) {
-    const segmentWidth = boundaries[index + 1] - boundaries[index];
-    if (segmentWidth >= minimumWidth && segmentWidth <= maximumWidth) results.push({ x: boundaries[index] / width, y: .02, w: segmentWidth / width, h: .96 });
+    const left = boundaries[index], gap = boundaries[index + 1] - left;
+    const parts = gap > typical * 1.75 ? clamp(Math.round(gap / typical), 2, 8) : 1;
+    for (let part = 1; part <= parts; part++) split.push(left + Math.round(gap * part / parts));
   }
-  if (results.length < 2) {
-    const count = clamp(Math.round(width / Math.max(28, height / 7)), 4, 30);
-    results = Array.from({ length: count }, (_, index) => ({ x: index / count, y: .02, w: 1 / count, h: .96 }));
+  boundaries = [...new Set(split)].sort((a, b) => a - b);
+  const yPadding = Math.max(2, Math.floor(bandHeight / 100));
+  const resultTop = Math.max(0, top - yPadding), resultBottom = Math.min(height, bottom + yPadding);
+  let results = boundaries.slice(0, -1).map((left, index) => ({ x: left / width, y: resultTop / height, w: (boundaries[index + 1] - left) / width, h: (resultBottom - resultTop) / height })).filter(rect => rect.w * width >= Math.max(6, width / 220));
+  if (results.length < 4) {
+    const count = clamp(Math.floor(width / Math.max(24, bandHeight / 11)), 6, 45);
+    results = Array.from({ length: count }, (_, index) => ({ x: index / count, y: resultTop / height, w: 1 / count, h: (resultBottom - resultTop) / height }));
   }
   return results;
 }
 
 function renderDetectedSpines() {
   const layer = $('spineLayer');
-  layer.innerHTML = state.detectedSpines.map((spine, index) => `<button type="button" class="spine-choice" data-spine="${index}" aria-label="Riconosci dorso ${index + 1}" style="left:${spine.x * 100}%;top:${spine.y * 100}%;width:${spine.w * 100}%;height:${spine.h * 100}%"></button>`).join('');
+  layer.innerHTML = state.detectedSpines.map((spine, index) => `<button type="button" class="spine-choice${state.editingSpineIndex === index ? ' selected' : ''}" data-spine="${index}" aria-label="${state.editingSpines ? 'Seleziona' : 'Riconosci'} dorso ${index + 1}" style="left:${spine.x * 100}%;top:${spine.y * 100}%;width:${spine.w * 100}%;height:${spine.h * 100}%"></button>`).join('');
   layer.onclick = async event => {
     const button = event.target.closest('[data-spine]'); if (!button) return;
-    state.selection = state.detectedSpines[Number(button.dataset.spine)];
+    const index = Number(button.dataset.spine);
+    state.selection = state.detectedSpines[index];
     drawSelection(state.selection); layer.innerHTML = '';
+    if (state.editingSpines) {
+      state.editingSpineIndex = index;
+      renderDetectedSpines();
+      return toast('Riquadro selezionato');
+    }
     await recognizeSelectedSpine();
   };
 }
@@ -523,8 +647,9 @@ async function saveAlbum(event) {
 
 function resetForm() {
   $('albumForm').reset(); $('editingId').value = ''; $('candidateList').innerHTML = '';
-  state.currentPhoto = null; state.selection = null; state.detectedSpines = []; state.marking = false;
+  state.currentPhoto = null; state.selection = null; state.detectedSpines = []; state.marking = false; state.editingSpines = false; state.editingSpineIndex = null; state.replaceEditedSpine = false;
   $('scanWorkspace').classList.add('hidden'); $('selectionBox').classList.add('hidden'); $('spineLayer').innerHTML = ''; $('markBtn').textContent = 'Segna dorso';
+  $('editSpinesBtn').classList.add('hidden'); $('editSpinesPanel').classList.add('hidden');
 }
 
 function bindLibrary() {
