@@ -242,7 +242,7 @@ async function detectSpines(blob) {
   for (const y of rowCandidates.sort((a, b) => rows[b] - rows[a])) if (rowPeaks.every(existing => Math.abs(existing - y) >= rowGap)) rowPeaks.push(y);
   rowPeaks.sort((a, b) => a - b);
   let top = Math.max(1, Math.floor(height / 25));
-  if (rowPeaks.length >= 3 && rowPeaks.at(-1) - rowPeaks[0] >= height * .12) top = Math.min(Math.floor(height * .55), rowPeaks.at(-1) + Math.max(2, Math.floor(height / 250)));
+  if (rowPeaks.length >= 3 && rowPeaks.at(-1) >= height * .20 && rowPeaks.at(-1) - rowPeaks[0] >= height * .12) top = Math.min(Math.floor(height * .55), rowPeaks.at(-1) + Math.max(2, Math.floor(height / 250)));
   const bottom = Math.min(height - 1, height - Math.floor(height / 40));
   const bandHeight = Math.max(1, bottom - top);
   const energy = new Float32Array(width);
