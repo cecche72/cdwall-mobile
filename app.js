@@ -241,9 +241,35 @@ async function detectSpines(blob) {
   const rowGap = Math.max(8, Math.floor(height / 45));
   for (const y of rowCandidates.sort((a, b) => rows[b] - rows[a])) if (rowPeaks.every(existing => Math.abs(existing - y) >= rowGap)) rowPeaks.push(y);
   rowPeaks.sort((a, b) => a - b);
-  let top = Math.max(1, Math.floor(height / 25));
-  if (rowPeaks.length >= 3 && rowPeaks.at(-1) >= height * .20 && rowPeaks.at(-1) - rowPeaks[0] >= height * .12) top = Math.min(Math.floor(height * .55), rowPeaks.at(-1) + Math.max(2, Math.floor(height / 250)));
-  const bottom = Math.min(height - 1, height - Math.floor(height / 40));
+  let top = Math.max(1, Math.floor(height / 25)), bottom = Math.min(height - 1, height - Math.floor(height / 40));
+  if (rowPeaks.length >= 3 && rowPeaks.at(-1) >= height * .20 && rowPeaks.at(-1) <= height * .45 && rowPeaks.at(-1) - rowPeaks[0] >= height * .12) top = Math.min(Math.floor(height * .55), rowPeaks.at(-1) + Math.max(2, Math.floor(height / 250)));
+  else {
+    const texture = new Float32Array(height);
+    for (let y = 0; y < height; y++) {
+      let sum = 0, squaredSum = 0, samples = 0;
+      for (let x = 0; x < width; x += xStep) { const value = lumaAt(x, y); sum += value; squaredSum += value * value; samples++; }
+      const mean = sum / Math.max(1, samples), deviation = Math.sqrt(Math.max(0, squaredSum / Math.max(1, samples) - mean * mean));
+      texture[y] = 255 - mean + deviation * .85;
+    }
+    const smoothTexture = smoothValues(texture, Math.max(2, Math.floor(height / 180)));
+    const ordered = Array.from(smoothTexture).sort((a, b) => a - b);
+    const low = ordered[Math.floor((ordered.length - 1) * .10)], high = ordered[Math.floor((ordered.length - 1) * .85)];
+    const threshold = low + (high - low) * .38, allowedGap = Math.max(3, Math.floor(height / 55));
+    let bestStart = 0, bestEnd = -1, start = -1, gap = 0;
+    for (let y = 0; y < height; y++) {
+      if (smoothTexture[y] >= threshold) { if (start < 0) start = y; gap = 0; }
+      else if (start >= 0 && ++gap > allowedGap) {
+        const end = y - gap;
+        if (end - start > bestEnd - bestStart) { bestStart = start; bestEnd = end; }
+        start = -1; gap = 0;
+      }
+    }
+    if (start >= 0 && height - start > bestEnd - bestStart) { bestStart = start; bestEnd = height - 1; }
+    if (bestEnd - bestStart >= height * .30) {
+      const padding = Math.max(2, Math.floor(height / 100));
+      top = Math.max(1, bestStart - padding); bottom = Math.min(height - 1, bestEnd + padding);
+    }
+  }
   const bandHeight = Math.max(1, bottom - top);
   const energy = new Float32Array(width);
   const yStep = Math.max(1, Math.floor(bandHeight / 520)), allowedGap = Math.max(3, Math.floor(bandHeight / 45));
