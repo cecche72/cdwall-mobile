@@ -115,10 +115,10 @@
         <div id="loanList" class="loan-list empty-state">Nessun prestito attivo</div>
       </details>
       <details class="panel"><summary>Backup e trasferimento</summary>
-        <p class="muted">Il backup completo include catalogo, posizioni e fotografie. Dal menu Condividi puoi salvarlo in iCloud Drive.</p>
+        <p class="muted">Il backup completo include catalogo, posizioni e fotografie. Dal menu Condividi puoi salvarlo in iCloud Drive. Per importarlo puoi selezionare il file .cdwall o JSON dall’app File, anche se iCloud non ne riconosce il tipo.</p>
         <div class="stack-actions">
           <button id="backupBtn" class="primary">Crea backup completo</button>
-          <label class="secondary file-button">Importa backup<input id="restoreInput" type="file" accept="application/json,.cdwall"></label>
+          <label class="secondary file-button">Importa backup<input id="restoreInput" type="file" aria-label="Scegli un backup da importare"></label>
           <button id="windowsExportBtn" class="secondary">Esporta catalogo JSON</button>
           <button id="csvBtn" class="secondary">Esporta CSV</button>
           <button id="pdfBtn" class="secondary">Stampa / salva PDF</button>
